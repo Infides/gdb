@@ -130,18 +130,7 @@ fn parse_args(mut args: Args) -> Result<Dice, String> {
 }
 
 #[command]
-async fn roll(ctx: &Context, msg: &Message, mut args: Args) -> CommandResult {
-    let message = format!(
-        "Argument length: {}\nArgument rest: {}",
-        args.len(),
-        args.rest()
-    );
-    msg.channel_id.say(&ctx.http, message).await?;
-    for arg in args.iter::<String>() {
-        let argument = format!("{:?}", arg);
-        msg.channel_id.say(&ctx.http, argument).await?;
-    }
-    
+async fn roll(ctx: &Context, msg: &Message, mut args: Args) -> CommandResult {    
     // Commands are in the form: "!roll xdy [+/-<values>] [Comments]", where x determines the amount of rolled dice and y
     // the dice type. As the delimiter is set to "d" or "w", x and y are directly accessible as arguments.
 
