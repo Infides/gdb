@@ -3,6 +3,8 @@ use average::{Estimate, Skewness};
 use rand::distributions::{Distribution, Uniform};
 use rand::{rngs::StdRng, SeedableRng};
 
+use regex::Regex;
+
 use serenity::framework::standard::{macros::command, Args, CommandResult};
 use serenity::model::prelude::*;
 use serenity::prelude::*;
@@ -14,6 +16,12 @@ struct Dice {
     kind: u8,
     modifier: i32,
     comment: String,
+}
+
+struct DiceRolls {
+    mode: Mode,
+    amount: u8,
+    kind: u8,
 }
 
 enum Mode {
@@ -73,6 +81,19 @@ fn parse_args(mut args: Args) -> Result<Dice, String> {
         comment: String::new(),
     };
 
+    // Parse multiple dice rolls
+    for arg in args.iter::<String>() {
+        let arg = arg.unwrap_or("No value found".to_string());
+        println!("Argument: {}", arg);
+        // Regex matches: {+/-/0..99}{d/w}{0..99}
+        let dice_regex = Regex::new(r"^(\+|\-|\d{1,2}?)(d|w)(\d{1,2}?)$").unwrap();
+        if dice_regex.is_match(&arg) == true {
+            println!("Found a valid pattern");
+        } else {
+            return Err(("No suitable dice pattern found.").into());
+        }
+    }
+
     // Parse prefix before "d" or "w"
     let dice_amount = args.current();
     match dice_amount {
@@ -130,19 +151,19 @@ fn parse_args(mut args: Args) -> Result<Dice, String> {
 }
 
 #[command]
-async fn roll(ctx: &Context, msg: &Message, mut args: Args) -> CommandResult {
-    let message = format!(
-        "Argument length: {}\nArgument rest: {}",
-        args.len(),
-        args.rest()
-    );
-    msg.channel_id.say(&ctx.http, message).await?;
-    for arg in args.iter::<String>() {
-        let argument = format!("{:?}", arg);
-        msg.channel_id.say(&ctx.http, argument).await?;
-    }
-    
-    // Commands are in the form: "!roll xdy [+/-<values>] [Comments]", where x determines the amount of rolled dice and y
+async fn roll(ctx: &Context, msg: &Message, args: Args) -> CommandResult {
+    // let message = format!(
+    //     "Argument length: {}\nArgument rest: {}",
+    //     args.len(),
+    //     args.rest()
+    // );
+    // msg.channel_id.say(&ctx.http, message).await?;
+    // for arg in args.iter::<String>() {
+    //     let argument = format!("{:?}", arg);
+    //     msg.channel_id.say(&ctx.http, argument).await?;
+    // }
+
+    // Commands are in the form: "!roll {xdy} {+/-<values>} {comments}", where x determines the amount of rolled dice and y
     // the dice type. As the delimiter is set to "d" or "w", x and y are directly accessible as arguments.
 
     // Get the nickname of the author or the name itself

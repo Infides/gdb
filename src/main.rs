@@ -102,7 +102,7 @@ async fn main() {
         .configure(|c| c
                    .owners(owners)
                    .prefix("!")
-                   .delimiters(vec!["d", "w", " "]))
+                   .delimiter(" "))
         .group(&GENERAL_GROUP);
 
     let mut client = Client::builder(&token)
