@@ -11,17 +11,16 @@ use serenity::prelude::*;
 use serenity::utils::MessageBuilder;
 
 struct Dice {
-    mode: Mode,
-    amount: u8,
-    kind: u8,
+    info: Vec<DiceInfo>,
     modifier: i32,
     comment: String,
 }
 
-struct DiceRolls {
+struct DiceInfo {
     mode: Mode,
     amount: u8,
     kind: u8,
+    results: Vec<u8>,
 }
 
 enum Mode {
@@ -30,122 +29,130 @@ enum Mode {
     Summation,
 }
 
-fn random_rolls(dice: &Dice) -> Vec<i32> {
-    // StdRng implements the 'Send' and 'Sync' trait, necessary for async calls
-    // Initialize the RNG from the OS entropy source
-    let mut rng = StdRng::from_entropy();
-    let rng_roll = Uniform::from(1..=dice.kind);
-    let mut roll_results: Vec<i32> = Vec::new();
-    for _ in 0..dice.amount {
-        roll_results.push(rng_roll.sample(&mut rng).into());
+fn random_rolls(dice: &Dice) {
+    for dice_roll in dice.info.iter() {
+        // StdRng implements the 'Send' and 'Sync' trait, necessary for async calls
+        // Initialize the RNG from the OS entropy source
+        let mut rng = StdRng::from_entropy();
+        let rng_roll = Uniform::from(1..=dice_roll.kind);
+        for _ in 0..dice_roll.amount {
+            dice_roll.results.push(rng_roll.sample(&mut rng).into());
+        }
     }
-    roll_results
 }
 
-fn perform_mode(roll_results: &Vec<i32>, dice: &Dice) -> String {
-    match dice.mode {
-        Mode::Advantage => {
-            let max_value = roll_results.iter().max();
-            match max_value {
-                Some(value) => {
-                    let result = value + dice.modifier;
-                    result.to_string()
-                }
-                None => "No maximum value found.".to_string(),
-            }
+// fn perform_mode(roll_results: &Vec<i32>, dice: &Dice) -> String {
+//     match dice.mode {
+//         Mode::Advantage => {
+//             let max_value = roll_results.iter().max();
+//             match max_value {
+//                 Some(value) => {
+//                     let result = value + dice.modifier;
+//                     result.to_string()
+//                 }
+//                 None => "No maximum value found.".to_string(),
+//             }
+//         }
+//         Mode::Disadvantage => {
+//             let min_value = roll_results.iter().min();
+//             match min_value {
+//                 Some(value) => {
+//                     let result = value + dice.modifier;
+//                     result.to_string()
+//                 }
+//                 None => "No minimum value found.".to_string(),
+//             }
+//         }
+//         Mode::Summation => {
+//             let sum_value: i32 = roll_results.iter().sum();
+//             let result = sum_value + dice.modifier;
+//             result.to_string()
+//         }
+//     }
+// }
+
+fn parse_dice_infos(capture: regex::Captures) -> Result<DiceInfo, String> {
+    let mut dice_info = DiceInfo {
+        mode: Mode::Summation,
+        amount: 1,
+        kind: 0,
+        results: Vec::new(),
+    };
+
+    let amount = capture.get(1).unwrap().as_str();
+    match amount {
+        "+" => {
+            dice_info.mode = Mode::Advantage;
+            dice_info.amount = 2;
         }
-        Mode::Disadvantage => {
-            let min_value = roll_results.iter().min();
-            match min_value {
-                Some(value) => {
-                    let result = value + dice.modifier;
-                    result.to_string()
-                }
-                None => "No minimum value found.".to_string(),
-            }
+        "-" => {
+            dice_info.mode = Mode::Disadvantage;
+            dice_info.amount = 2;
         }
-        Mode::Summation => {
-            let sum_value: i32 = roll_results.iter().sum();
-            let result = sum_value + dice.modifier;
-            result.to_string()
+        _ => {
+            dice_info.mode = Mode::Summation;
+            dice_info.amount = amount.parse::<u8>().unwrap();
+            // Sanity check: amount of dice to be rolled
+            if dice_info.amount < 1 || dice_info.amount > 50 {
+                return Err(("Please roll an amount of dice between 1 and 50.").to_string());
+            }
         }
     }
+    println!("Dice amount: {}", dice_info.amount);
+
+    let kind = capture.get(2).unwrap().as_str().parse::<u8>().unwrap();
+    if kind < 2 || kind > 100 {
+        return Err(("Please use a dice type between 2 and 100.").to_string());
+    } else {
+        dice_info.kind = kind;
+    }
+    println!("Dice type: {}", dice_info.kind);
+
+    Ok(dice_info)
 }
 
 fn parse_args(mut args: Args) -> Result<Dice, String> {
     let mut dice = Dice {
-        mode: Mode::Summation,
-        amount: 1,
-        kind: 0,
+        info: Vec::new(),
         modifier: 0,
         comment: String::new(),
     };
 
-    // Parse multiple dice rolls
-    for arg in args.iter::<String>() {
-        let arg = arg.unwrap_or("No value found".to_string());
-        println!("Argument: {}", arg);
-        // Regex matches: {+/-/0..99}{d/w}{0..99}
-        let dice_regex = Regex::new(r"^(\+|\-|\d{1,2}?)(d|w)(\d{1,2}?)$").unwrap();
+    // Parse multiple dice information
+    for _ in 0..args.len() {
+        let arg = args.current().unwrap();
+        // Regex matches: {+/-/0..99}{d/w}{0..999}
+        let dice_regex =
+            Regex::new(r"^(\+|\-|\d{1,2}?)[d|w](\d{1,3}?)$").expect("Regex initialization failed.");
         if dice_regex.is_match(&arg) == true {
-            println!("Found a valid pattern");
-        } else {
-            return Err(("No suitable dice pattern found.").into());
-        }
-    }
-
-    // Parse prefix before "d" or "w"
-    let dice_amount = args.current();
-    match dice_amount {
-        Some("+") => {
-            dice.mode = Mode::Advantage;
-            dice.amount = 2;
+            let capture = dice_regex
+                .captures(&arg)
+                .expect("Cannot capture dice regex information.");
+            let dice_info = parse_dice_infos(capture)?;
+            dice.info.push(dice_info);
             args.advance();
         }
-        Some("-") => {
-            dice.mode = Mode::Disadvantage;
-            dice.amount = 2;
-            args.advance();
-        }
-        _ => {
-            dice.mode = Mode::Summation;
-            dice.amount = args.single::<u8>().unwrap();
-            // Sanity check: amount of dice to be rolled
-            if dice.amount < 1 || dice.amount > 50 {
-                return Err(("Please roll an amount of dice between 1 and 50.").into());
-            }
-        }
     }
+    println!("Args remaining: {}", args.remaining());
 
-    // Parse dice type
-    if let Some(dice_type) = args.current() {
-        match dice_type {
-            "2" | "3" | "4" | "5" | "6" | "7" | "8" | "10" | "12" | "14" | "16" | "20" | "24"
-            | "30" | "100" => {
-                dice.kind = args.single::<u8>().unwrap();
-            }
-            _ => {
-                return Err(("Please use an implemented dice type.").into());
-            }
-        }
-    }
-
-    // Parse modifiers if any
+    // Parse dice modifiers if any
     for _ in 0..args.remaining() {
-        let modifier_value = args.current();
-        match modifier_value {
-            Some(value) => {
-                let number = value.parse::<i32>();
-                if number.is_ok() {
-                    dice.modifier += args.single::<i32>().unwrap();
-                }
+        let arg = args.current().unwrap();
+        match arg.parse::<i32>() {
+            Ok(value) => {
+                dice.modifier += value;
+                args.advance();
             }
-            None => (),
+            Err(_) => (),
         }
+        println!("Dice modifier: {}", dice.modifier);
     }
+    println!("Dice modifiers summed up: {}", dice.modifier);
+    println!("Args remaining: {}", args.remaining());
 
     // Parse any arguments left as a string
     dice.comment = args.rest().to_string();
+    println!("Dice comment: {}", dice.comment);
 
     Ok(dice)
 }
@@ -184,26 +191,27 @@ async fn roll(ctx: &Context, msg: &Message, args: Args) -> CommandResult {
 
     // If amount of dice could be determined and which dice type, start rolling :)
     let roll_results = random_rolls(&dice);
+    println!("Roll results: {:?}", roll_results);
 
     // Perform mode and apply possible modifiers
-    let mode_result = perform_mode(&roll_results, &dice);
+    //let mode_result = perform_mode(&roll_results, &dice);
 
     // Send the message back to the channel
-    let first_part = format!(
-        "{} rolled {}d{} {:?} {:+}:  ",
-        author_name,
-        dice.amount.to_string(),
-        dice.kind.to_string(),
-        roll_results,
-        dice.modifier,
-    );
-    let response = MessageBuilder::new()
-        .push(first_part)
-        .push_bold(mode_result)
-        .push("  ")
-        .push(dice.comment)
-        .build();
-    msg.channel_id.say(&ctx.http, response).await?;
+    // let first_part = format!(
+    //     "{} rolled {}d{} {:?} {:+}:  ",
+    //     author_name,
+    //     dice.amount.to_string(),
+    //     dice.kind.to_string(),
+    //     roll_results,
+    //     dice.modifier,
+    // );
+    // let response = MessageBuilder::new()
+    //     .push(first_part)
+    //     .push_bold(mode_result)
+    //     .push("  ")
+    //     .push(dice.comment)
+    //     .build();
+    // msg.channel_id.say(&ctx.http, response).await?;
 
     Ok(())
 }
