@@ -3,17 +3,24 @@ use average::{Estimate, Skewness};
 use rand::distributions::{Distribution, Uniform};
 use rand::{rngs::StdRng, SeedableRng};
 
+use regex::Regex;
+
 use serenity::framework::standard::{macros::command, Args, CommandResult};
 use serenity::model::prelude::*;
 use serenity::prelude::*;
 use serenity::utils::MessageBuilder;
 
 struct Dice {
-    mode: Mode,
-    amount: u8,
-    kind: u8,
+    info: Vec<DiceInfo>,
     modifier: i32,
     comment: String,
+}
+
+struct DiceInfo {
+    mode: Mode,
+    amount: u8,
+    kind: u16,
+    results: Vec<i32>,
 }
 
 enum Mode {
@@ -22,116 +29,144 @@ enum Mode {
     Summation,
 }
 
-fn random_rolls(dice: &Dice) -> Vec<i32> {
-    // StdRng implements the 'Send' and 'Sync' trait, necessary for async calls
-    // Initialize the RNG from the OS entropy source
-    let mut rng = StdRng::from_entropy();
-    let rng_roll = Uniform::from(1..=dice.kind);
-    let mut roll_results: Vec<i32> = Vec::new();
-    for _ in 0..dice.amount {
-        roll_results.push(rng_roll.sample(&mut rng).into());
+fn random_rolls(dice: &mut Dice) {
+    for dice_roll in dice.info.iter_mut() {
+        // StdRng implements the 'Send' and 'Sync' trait, necessary for async calls
+        // Initialize the RNG from the OS entropy source
+        let mut rng = StdRng::from_entropy();
+        let rng_roll = Uniform::from(1..=dice_roll.kind);
+        for _ in 0..dice_roll.amount {
+            dice_roll.results.push(rng_roll.sample(&mut rng).into());
+        }
     }
-    roll_results
 }
 
-fn perform_mode(roll_results: &Vec<i32>, dice: &Dice) -> String {
-    match dice.mode {
-        Mode::Advantage => {
-            let max_value = roll_results.iter().max();
-            match max_value {
-                Some(value) => {
-                    let result = value + dice.modifier;
-                    result.to_string()
+fn calculate_result(dice: &Dice) -> String {
+    // Add the results from all dice rolls
+    let mut result: i32 = 0;
+    for dice_roll in dice.info.iter() {
+        match dice_roll.mode {
+            Mode::Advantage => {
+                let max_value = dice_roll.results.iter().max();
+                match max_value {
+                    Some(value) => {
+                        result += value;
+                    }
+                    None => (),
                 }
-                None => "No maximum value found.".to_string(),
             }
-        }
-        Mode::Disadvantage => {
-            let min_value = roll_results.iter().min();
-            match min_value {
-                Some(value) => {
-                    let result = value + dice.modifier;
-                    result.to_string()
+            Mode::Disadvantage => {
+                let min_value = dice_roll.results.iter().min();
+                match min_value {
+                    Some(value) => {
+                        result += value;
+                    }
+                    None => (),
                 }
-                None => "No minimum value found.".to_string(),
             }
-        }
-        Mode::Summation => {
-            let sum_value: i32 = roll_results.iter().sum();
-            let result = sum_value + dice.modifier;
-            result.to_string()
+            Mode::Summation => {
+                let sum_value: i32 = dice_roll.results.iter().sum();
+                result += sum_value;
+            }
         }
     }
+    // Apply the modifier on it
+    result += dice.modifier;
+    // Turn the result into a string
+    result.to_string()
+}
+
+fn parse_dice_infos(capture: regex::Captures) -> Result<DiceInfo, String> {
+    let mut dice_info = DiceInfo {
+        mode: Mode::Summation,
+        amount: 1,
+        kind: 0,
+        results: Vec::new(),
+    };
+
+    let amount = capture.get(1).unwrap().as_str();
+    match amount {
+        "+" => {
+            dice_info.mode = Mode::Advantage;
+            dice_info.amount = 2;
+        }
+        "-" => {
+            dice_info.mode = Mode::Disadvantage;
+            dice_info.amount = 2;
+        }
+        _ => {
+            dice_info.mode = Mode::Summation;
+            dice_info.amount = amount.parse::<u8>().unwrap();
+            // Sanity check: amount of dice to be rolled
+            if dice_info.amount < 1 || dice_info.amount > 50 {
+                return Err(("Please roll an amount of dice between 1 and 50.").to_string());
+            }
+        }
+    }
+
+    let kind = capture.get(2).unwrap().as_str().parse::<u16>().unwrap();
+    if kind < 2 || kind > 100 {
+        return Err(("Please use a dice type between 2 and 100.").to_string());
+    } else {
+        dice_info.kind = kind;
+    }
+
+    Ok(dice_info)
 }
 
 fn parse_args(mut args: Args) -> Result<Dice, String> {
     let mut dice = Dice {
-        mode: Mode::Summation,
-        amount: 1,
-        kind: 0,
+        info: Vec::new(),
         modifier: 0,
         comment: String::new(),
     };
 
-    // Parse prefix before "d" or "w"
-    let dice_amount = args.current();
-    match dice_amount {
-        Some("+") => {
-            dice.mode = Mode::Advantage;
-            dice.amount = 2;
-            args.advance();
+    // Parse multiple dice information and comments
+    let mut found_dice_rolls = false;
+    for arg in args.iter::<String>() {
+        let arg = arg.unwrap();
+        // Regex matches: {+/-/0..99}{d/w}{0..999}
+        let dice_regex =
+            Regex::new(r"^(\+|\-|\d{1,2}?)[d|w](\d{1,3}?)$").expect("Regex initialization failed.");
+        if dice_regex.is_match(&arg) == true {
+            let capture = dice_regex
+                .captures(&arg)
+                .expect("Cannot capture dice regex information.");
+            let dice_info = parse_dice_infos(capture)?;
+            dice.info.push(dice_info);
+            found_dice_rolls = true;
         }
-        Some("-") => {
-            dice.mode = Mode::Disadvantage;
-            dice.amount = 2;
-            args.advance();
-        }
-        _ => {
-            dice.mode = Mode::Summation;
-            dice.amount = args.single::<u8>().unwrap();
-            // Sanity check: amount of dice to be rolled
-            if dice.amount < 1 || dice.amount > 50 {
-                return Err(("Please roll an amount of dice between 1 and 50.").into());
-            }
-        }
-    }
-
-    // Parse dice type
-    if let Some(dice_type) = args.current() {
-        match dice_type {
-            "2" | "3" | "4" | "5" | "6" | "7" | "8" | "10" | "12" | "14" | "16" | "20" | "24"
-            | "30" | "100" => {
-                dice.kind = args.single::<u8>().unwrap();
-            }
-            _ => {
-                return Err(("Please use an implemented dice type.").into());
-            }
+        // Find start of comments
+        if arg == "!" {
+            dice.comment = args.rest().to_string();
+            break;
         }
     }
 
-    // Parse modifiers if any
-    for _ in 0..args.remaining() {
-        let modifier_value = args.current();
-        match modifier_value {
-            Some(value) => {
-                let number = value.parse::<i32>();
-                if number.is_ok() {
-                    dice.modifier += args.single::<i32>().unwrap();
-                }
-            }
-            None => (),
-        }
+    // Abort if no dice pattern could be found
+    if found_dice_rolls == false {
+        return Err("No suitable dice roll found. See **!help** for the syntax.".to_string());
     }
 
-    // Parse any arguments left as a string
-    dice.comment = args.rest().to_string();
+    // Restore args so that the modifiers can be parsed
+    args.restore();
+
+    // Parse dice modifiers if any
+    for arg in args.iter::<i32>() {
+        match arg {
+            Ok(value) => {
+                dice.modifier += value;
+            }
+            Err(_) => (),
+        }
+    }
 
     Ok(dice)
 }
 
 #[command]
-async fn roll(ctx: &Context, msg: &Message, mut args: Args) -> CommandResult {    
-    // Commands are in the form: "!roll xdy [+/-<values>] [Comments]", where x determines the amount of rolled dice and y
+async fn roll(ctx: &Context, msg: &Message, args: Args) -> CommandResult {    
+    // Commands are in the form: "!roll {xdy} {+/-<values>} {Comments}", where x determines the amount of rolled dice and y
     // the dice type. As the delimiter is set to "d" or "w", x and y are directly accessible as arguments.
 
     // Get the nickname of the author or the name itself
@@ -141,7 +176,7 @@ async fn roll(ctx: &Context, msg: &Message, mut args: Args) -> CommandResult {
         None => author_name = msg.author.name.clone(),
     };
 
-    let dice = match parse_args(args) {
+    let mut dice = match parse_args(args) {
         Ok(dice) => dice,
         Err(error) => {
             let error_message = format!("{}: {}", author_name, error);
@@ -151,23 +186,28 @@ async fn roll(ctx: &Context, msg: &Message, mut args: Args) -> CommandResult {
     };
 
     // If amount of dice could be determined and which dice type, start rolling :)
-    let roll_results = random_rolls(&dice);
+    random_rolls(&mut dice);
 
-    // Perform mode and apply possible modifiers
-    let mode_result = perform_mode(&roll_results, &dice);
+    // Extract the result from the rolls and apply the modifier on it
+    let dice_result = calculate_result(&dice);
 
-    // Send the message back to the channel
-    let first_part = format!(
-        "{} rolled {}d{} {:?} {:+}:  ",
-        author_name,
-        dice.amount.to_string(),
-        dice.kind.to_string(),
-        roll_results,
-        dice.modifier,
-    );
+    // Send the result back to the channel
+    let author_string = format!("{} rolled", author_name);
+    let mut dice_string = String::new();
+    for dice_roll in dice.info.iter() {
+        let dice_info = format!(
+            " {}d{} {:?}",
+            dice_roll.amount, dice_roll.kind, dice_roll.results
+        );
+        dice_string.push_str(dice_info.as_str());
+    }
+    let modifier_string = format!(" {:+}", dice.modifier);
     let response = MessageBuilder::new()
-        .push(first_part)
-        .push_bold(mode_result)
+        .push(author_string)
+        .push(dice_string)
+        .push(modifier_string)
+        .push(":  ")
+        .push_bold(dice_result)
         .push("  ")
         .push(dice.comment)
         .build();
@@ -224,17 +264,21 @@ async fn test_randomness(ctx: &Context, msg: &Message, mut args: Args) -> Comman
 #[command]
 async fn help(ctx: &Context, msg: &Message) -> CommandResult {
     let message = format!(
-        "Gaming Dice Bot Help
-         Available commands are: !roll, !ping, !add, !subtract, !multiply, !divide
-         Command !roll lets you roll an amount of dice between 1 and 50. You can choose between the dice types of: 2, 4, 6, 8, 10, 12, 16, 20, 100
-         An advantage and disadvantage roll with '+' or '-', which picks either the maximum value of two dice rolls (advantage) or the minimum of two dice rolls (disadvantage) is also available.
-         Modifiers can also be added in the form of e.g. '+3' or '-24' after the specification of the amount of dice and the dice type.
-         Everything after these modifiers will be treated as a comment.
-         A proper command looks like this:
-             !roll 1d20 +5 Goblin attack
-         The general command syntax is:
-             !roll <amount>d<type> <modifiers> <comments>
-         Whitespace must be used between after the first two arguments (amount and type), between each modifier, and also the comment."
+"__**Gaming Dice Bot Help**__
+Available commands are: **!roll**, **!ping**, **!add**, **!subtract**, **!multiply**, **!divide**
+Command **!roll** will let you roll an amount of dice between **1** and **50**. You can choose all dice types between **2** and **100**.
+The roll command is build by three different parts: 1) dice amount and type (necessary), 2) dice modifiers (optional), 3) comments (optional).
+An advantage and disadvantage roll with **+** or **-**, selecting either the maximum/minimum value of two dice rolls (advantage/disadvantage) is also available.
+Modifiers can be added in the form of e.g. **+3** or **-24**.
+Comments are parsed after the **!** character.
+Whitespace is used as a separator. It is therefore necessary to use it between the different parts of the dice rolls in order to parse them as arguments.
+A dice roll could look like the follwing:
+    `!roll -d20 +2 ! Goblin attack`
+A multiple dice roll could be as follows:
+    `!roll 4d8 +3 2d6 +5 ! Combo damage`
+The general command syntax is:
+    `!roll <amount>d/w<type> <modifiers> ! <comments>`
+"
     );
     msg.channel_id.say(&ctx.http, message).await?;
     Ok(())

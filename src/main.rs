@@ -10,36 +10,18 @@
 //! ```
 mod commands;
 
-use std::{
-    collections::HashSet,
-    env,
-    sync::Arc,
-};
+use std::{collections::HashSet, env, sync::Arc};
+
+use commands::{gdb::*, math::*, meta::*, owner::*};
 use serenity::{
     async_trait,
     client::bridge::gateway::ShardManager,
-    framework::{
-        StandardFramework,
-        standard::macros::group,
-    },
+    framework::{standard::macros::group, StandardFramework},
     http::Http,
     model::{event::ResumedEvent, gateway::Ready},
     prelude::*,
 };
-
 use tracing::{error, info};
-use tracing_subscriber::{
-    FmtSubscriber,
-    EnvFilter,
-};
-
-
-use commands::{
-    gdb::*,
-    math::*,
-    meta::*,
-    owner::*,
-};
 
 pub struct ShardManagerContainer;
 
@@ -61,7 +43,17 @@ impl EventHandler for Handler {
 }
 
 #[group]
-#[commands(help, roll, test_randomness, add, subtract, multiply, divide, ping, quit)]
+#[commands(
+    help,
+    roll,
+    test_randomness,
+    add,
+    subtract,
+    multiply,
+    divide,
+    ping,
+    quit
+)]
 struct General;
 
 #[tokio::main]
@@ -74,15 +66,9 @@ async fn main() {
     //
     // In this case, a good default is setting the environment variable
     // `RUST_LOG` to debug`.
-    let subscriber = FmtSubscriber::builder()
-        .with_env_filter(EnvFilter::from_default_env())
-        .finish();
+    tracing_subscriber::fmt::init();
 
-    tracing::subscriber::set_global_default(subscriber).expect("Failed to start the logger");
-
-
-    let token = env::var("DISCORD_TOKEN")
-        .expect("Expected a token in the environment");
+    let token = env::var("DISCORD_TOKEN").expect("Expected a token in the environment");
 
     let http = Http::new_with_token(&token);
 
@@ -93,16 +79,13 @@ async fn main() {
             owners.insert(info.owner.id);
 
             (owners, info.id)
-        },
+        }
         Err(why) => panic!("Could not access application info: {:?}", why),
     };
 
     // Create the framework
     let framework = StandardFramework::new()
-        .configure(|c| c
-                   .owners(owners)
-                   .prefix("!")
-                   .delimiters(vec!["d", "w", " "]))
+        .configure(|c| c.owners(owners).prefix("!").delimiter(" "))
         .group(&GENERAL_GROUP);
 
     let mut client = Client::builder(&token)
@@ -119,7 +102,9 @@ async fn main() {
     let shard_manager = client.shard_manager.clone();
 
     tokio::spawn(async move {
-        tokio::signal::ctrl_c().await.expect("Could not register ctrl+c handler");
+        tokio::signal::ctrl_c()
+            .await
+            .expect("Could not register ctrl+c handler");
         shard_manager.lock().await.shutdown_all().await;
     });
 
